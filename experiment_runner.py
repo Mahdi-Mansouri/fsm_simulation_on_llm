@@ -10,16 +10,17 @@ from database_manager import DatabaseManager
 
 # --- Experiment Configuration ---
 # --- CHANGE THE MODEL NAME HERE TO RUN A NEW EXPERIMENT ---
-#MODEL_NAME = "qwen3-0.6b" 
-#MODEL_NAME = "gemini-2.5-flash" # Example for a second run
-MODEL_NAME = "qwen3-8b" 
+MODEL_NAME = "qwen3-235b-a22b-instruct-2507" 
+#MODEL_NAME = "gpt-5" # Example for a second run
+#MODEL_NAME = "qwen3-14b" 
 SUPPORTS_SYSTEM_PROMPT = True
 API_KEY = "YOUR_API_KEY"  # IMPORTANT: REPLACE WITH YOUR KEY
 BASE_URL = "https://api.avalai.ir/v1"
 TOTAL_INSTANCES = 20
-TURNS_PER_INSTANCE = 20
+TURNS_PER_INSTANCE = 50 
 STEPS_PER_TURN = 1
-MAX_WORKERS = 1  # Number of parallel threads
+MAX_WORKERS = 4
+# Number of parallel threads
 SLEEP_TIME = 1
 
 # --- Helper Functions ---
@@ -135,14 +136,25 @@ def run_experiment():
         return
 
     db = DatabaseManager()
+    
+    # Ensure FSM definitions exist up to the configured TOTAL_INSTANCES.
+    # If TOTAL_INSTANCES is increased, this will generate and save the new ones.
     db.ensure_fsm_definitions(TOTAL_INSTANCES)
+    
+    # Prepare runs for potential extension by turn count.
+    # This will mark previously completed runs as incomplete if TURNS_PER_INSTANCE is now higher.
+    db.prepare_runs_for_extension(MODEL_NAME, TURNS_PER_INSTANCE)
+    
+    # Get all runs that are not yet complete (new, interrupted, or extended).
     runs_to_process = db.get_runs_to_process(TOTAL_INSTANCES, MODEL_NAME)
     completed_count = TOTAL_INSTANCES - len(runs_to_process)
     db.close()
     
     print(f"--- FSM Evaluation Runner ---")
     print(f"Model under test: {MODEL_NAME}")
-    print(f"Found {completed_count}/{TOTAL_INSTANCES} runs already complete for this model.")
+    print(f"Target instances: {TOTAL_INSTANCES}")
+    print(f"Target turns per instance: {TURNS_PER_INSTANCE}")
+    print(f"Found {completed_count}/{TOTAL_INSTANCES} runs already complete for this model at the target configuration.")
     if not runs_to_process:
         print("🎉 All runs for this model are complete.")
         return
