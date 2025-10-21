@@ -2,8 +2,8 @@ import sqlite3
 import json
 from FSM import FSMManager
 STATE_NUM = 2
-ACTIONS_NUM = 2
-TRANSITION_NUM = 4
+ACTIONS_NUM = 40
+TRANSITION_NUM = 80
 
 class DatabaseManager:
     """Handles all SQLite database operations for the multi-model FSM experiment."""
@@ -74,11 +74,13 @@ class DatabaseManager:
         self.cursor.execute("SELECT COUNT(*) FROM fsm_definitions")
         count = self.cursor.fetchone()[0]
         if count >= total_instances:
-            print("Found existing FSM definitions in the database.")
+            print(f"Found {count} existing FSM definitions, which meets the target of {total_instances}.")
             return
 
-        print(f"Generating {total_instances} new FSM definitions...")
-        for i in range(1, total_instances + 1):
+        new_definitions_to_create = total_instances - count
+        print(f"Found {count} FSM definitions. Generating {new_definitions_to_create} new ones to reach a total of {total_instances}...")
+        
+        for i in range(count + 1, total_instances + 1):
             fsm = FSMManager()
             fsm.create_random_fsm(num_states=STATE_NUM, num_actions=ACTIONS_NUM, num_transitions=TRANSITION_NUM)
             definition = {
@@ -179,6 +181,21 @@ class DatabaseManager:
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (model_name, instance_id, turn, length, expected, actual, failure_type))
         self.conn.commit()
+
+    def prepare_runs_for_extension(self, model_name, new_total_turns):
+        """
+        Resets the 'is_complete' flag for runs that were completed with fewer turns
+        than the new target, allowing them to be extended.
+        """
+        self.cursor.execute("""
+            UPDATE experiment_runs
+            SET is_complete = 0
+            WHERE model_name = ? AND is_complete = 1 AND current_turn < ?
+        """, (model_name, new_total_turns))
+        updated_rows = self.cursor.rowcount
+        self.conn.commit()
+        if updated_rows > 0:
+            print(f"INFO: Marked {updated_rows} previously completed runs for model '{model_name}' to be extended.")
 
     def get_runs_to_process(self, total_instances, model_name):
         """Gets a list of instance_ids that are not yet complete for the given model."""

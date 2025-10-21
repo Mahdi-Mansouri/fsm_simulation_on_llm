@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 def plot_results(db_name="fsm_experiment.db"):
-    """Reads all results from the database and plots accuracy curves for each model."""
+    """Reads all results from the database, plots accuracy curves, and prints a token usage summary."""
     try:
         conn = sqlite3.connect(db_name)
         # Use pandas to easily read and group data
@@ -54,6 +54,51 @@ def plot_results(db_name="fsm_experiment.db"):
     print("Saved turn_accuracy.png")
 
     plt.show()
+
+    # --- Print Token Usage Summary ---
+    print("\n--- Token Usage Summary ---")
+    try:
+        conn = sqlite3.connect(db_name)
+        token_df = pd.read_sql_query("SELECT model_name, total_prompt_tokens, total_completion_tokens FROM experiment_runs WHERE is_complete = 1", conn)
+        conn.close()
+
+        if not token_df.empty:
+            summary = token_df.groupby('model_name').agg(
+                total_prompt_tokens=('total_prompt_tokens', 'sum'),
+                total_completion_tokens=('total_completion_tokens', 'sum'),
+                instances_completed=('model_name', 'count')
+            ).reset_index()
+
+            # Calculate total and average for prompt, completion, and overall tokens
+            summary['avg_prompt_tokens'] = summary['total_prompt_tokens'] / summary['instances_completed']
+            summary['avg_completion_tokens'] = summary['total_completion_tokens'] / summary['instances_completed']
+            summary['total_tokens'] = summary['total_prompt_tokens'] + summary['total_completion_tokens']
+            summary['avg_total_tokens'] = summary['total_tokens'] / summary['instances_completed']
+            
+            # Reorder columns for a clearer presentation
+            summary = summary[[
+                'model_name', 'instances_completed', 
+                'total_prompt_tokens', 'avg_prompt_tokens',
+                'total_completion_tokens', 'avg_completion_tokens',
+                'total_tokens', 'avg_total_tokens'
+            ]]
+            
+            # Format total numbers with commas for readability
+            summary['total_prompt_tokens'] = summary['total_prompt_tokens'].map('{:,.0f}'.format)
+            summary['total_completion_tokens'] = summary['total_completion_tokens'].map('{:,.0f}'.format)
+            summary['total_tokens'] = summary['total_tokens'].map('{:,.0f}'.format)
+
+            print(summary.to_string(index=False, formatters={
+                'avg_prompt_tokens': '{:,.2f}'.format,
+                'avg_completion_tokens': '{:,.2f}'.format,
+                'avg_total_tokens': '{:,.2f}'.format
+            }))
+        else:
+            print("No completed runs with token data found.")
+
+    except Exception as e:
+        print(f"Could not retrieve token usage data: {e}")
+
 
 if __name__ == "__main__":
     plot_results()
