@@ -1,31 +1,27 @@
 import sqlite3
 import json
 from FSM import FSMManager
-STATE_NUM = 2
-ACTIONS_NUM = 40
-TRANSITION_NUM = 80
+STATE_NUM = 4
+ACTIONS_NUM = 5
+TRANSITION_NUM = 20
 
 class DatabaseManager:
     """Handles all SQLite database operations for the multi-model FSM experiment."""
 
     def __init__(self, db_name="fsm_experiment.db"):
         self.db_name = db_name
-        # The check_same_thread=False is important for multi-threaded access
         self.conn = sqlite3.connect(db_name, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self._create_tables()
 
     def _create_tables(self):
         """Creates the necessary tables for a multi-model experiment."""
-        # Table to store the 100 base FSM definitions. Populated only once.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS fsm_definitions (
                 instance_id INTEGER PRIMARY KEY,
                 fsm_definition TEXT NOT NULL
             )
         """)
-
-        # Table to store the run state for each model on each FSM instance.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS experiment_runs (
                 run_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,8 +36,6 @@ class DatabaseManager:
                 UNIQUE(instance_id, model_name)
             )
         """)
-
-        # Table to store aggregated results, now model-aware.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS results (
                 result_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,8 +47,6 @@ class DatabaseManager:
                 UNIQUE(model_name, task_length)
             )
         """)
-
-        # Error log, now model-aware.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS error_log (
                 log_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,12 +61,100 @@ class DatabaseManager:
         """)
         self.conn.commit()
 
+    def _get_max_existing_instance_id(self):
+        """Helper to find the highest instance_id in the definitions."""
+        self.cursor.execute("SELECT MAX(instance_id) FROM fsm_definitions")
+        result = self.cursor.fetchone()
+        return result[0] if result and result[0] is not None else 0
+
+    def handle_sample_size_change(self, new_total_instances, model_name, total_turns, steps_per_turn):
+        """
+        Detects if the target instance count is a reduction. If so, purges
+        excess data and recalculates aggregates for the specified model.
+        """
+        max_existing_id = self._get_max_existing_instance_id()
+        
+        # If new target is >= existing, it's an increase or no-op. Nothing to do.
+        if new_total_instances >= max_existing_id:
+            return
+
+        print(f"--- ⚠️ Sample Size Reduction Detected ---")
+        print(f"INFO: New target is {new_total_instances} instances, but found {max_existing_id} existing.")
+        print(f"INFO: Purging all data for instances > {new_total_instances}...")
+        
+        try:
+            # Step 1: Purge all excess data
+            self.cursor.execute("DELETE FROM fsm_definitions WHERE instance_id > ?", (new_total_instances,))
+            self.cursor.execute("DELETE FROM experiment_runs WHERE instance_id > ?", (new_total_instances,))
+            self.cursor.execute("DELETE FROM error_log WHERE instance_id > ?", (new_total_instances,))
+            
+            # Step 2: Wipe the aggregate results for *this model*
+            print(f"INFO: Wiping old aggregates for model: '{model_name}'")
+            self.cursor.execute("DELETE FROM results WHERE model_name = ?", (model_name,))
+            self.conn.commit()
+
+            # Step 3: Rebuild the aggregate results from the remaining data
+            print(f"INFO: Rebuilding aggregates for '{model_name}' from remaining {new_total_instances} instances...")
+            
+            # Get all remaining runs and errors for this model
+            self.cursor.execute("SELECT instance_id, current_turn FROM experiment_runs WHERE model_name = ? AND instance_id <= ?", (model_name, new_total_instances))
+            all_runs = self.cursor.fetchall() # (instance_id, max_turn)
+            
+            self.cursor.execute("SELECT instance_id, turn_number FROM error_log WHERE model_name = ? AND instance_id <= ?", (model_name, new_total_instances))
+            all_errors = self.cursor.fetchall() # (instance_id, turn_number)
+
+            errors_by_instance = {}
+            for inst_id, turn_num in all_errors:
+                if inst_id not in errors_by_instance:
+                    errors_by_instance[inst_id] = set()
+                errors_by_instance[inst_id].add(turn_num)
+
+            for turn in range(1, total_turns + 1):
+                task_length = turn * steps_per_turn
+                
+                total_runs_for_this_len = 0
+                turn_successes_for_this_len = 0
+                task_successes_for_this_len = 0
+
+                for inst_id, max_turn in all_runs:
+                    if max_turn < turn:
+                        continue
+                    
+                    total_runs_for_this_len += 1
+                    instance_errors = errors_by_instance.get(inst_id, set())
+                    
+                    if turn not in instance_errors:
+                        turn_successes_for_this_len += 1
+                    
+                    task_failed = False
+                    for error_turn in instance_errors:
+                        if error_turn <= turn:
+                            task_failed = True
+                            break
+                    if not task_failed:
+                        task_successes_for_this_len += 1
+                
+                if total_runs_for_this_len > 0:
+                    self.cursor.execute(
+                        "INSERT INTO results (model_name, task_length, turn_successes, task_successes, total_runs) VALUES (?, ?, ?, ?, ?)",
+                        (model_name, task_length, turn_successes_for_this_len, task_successes_for_this_len, total_runs_for_this_len)
+                    )
+            
+            self.conn.commit()
+            print("INFO: Aggregate rebuild complete. Proceeding with experiment.")
+            print("-----------------------------------------")
+
+        except Exception as e:
+            print(f"FATAL ERROR during aggregate rebuild: {e}")
+            self.conn.rollback()
+            raise e
+
     def ensure_fsm_definitions(self, total_instances):
         """Checks if FSM definitions exist. If not, creates and saves them."""
         self.cursor.execute("SELECT COUNT(*) FROM fsm_definitions")
         count = self.cursor.fetchone()[0]
         if count >= total_instances:
-            print(f"Found {count} existing FSM definitions, which meets the target of {total_instances}.")
+            print(f"Found {count} existing FSM definitions, meeting target of {total_instances}.")
             return
 
         new_definitions_to_create = total_instances - count
@@ -214,4 +294,3 @@ class DatabaseManager:
         
     def close(self):
         self.conn.close()
-

@@ -252,6 +252,7 @@ class FSMManager:
         for from_state, actions in sorted(self.transitions.items()):
             for action, to_state in sorted(actions.items()):
                 fsm_def_lines.append(f"From {from_state}, on action {action}, go to {to_state}.")
+                #fsm_def_lines.append(f"On action {action}, from {from_state} go to {to_state}.")
         
         fsm_definition_str = "\n".join(fsm_def_lines)
 
